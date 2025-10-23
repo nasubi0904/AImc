@@ -59,6 +59,7 @@ class RoiOverlayController(QWidget):
         preview_mode: PreviewMode,
         hotkeys: dict,
         parent: Optional[QWidget] = None,
+        preview_color: Tuple[int, int, int, int] = (0, 200, 255, 230),
     ) -> None:
         super().__init__(parent)
         self._monitor_id = monitor_id
@@ -66,6 +67,7 @@ class RoiOverlayController(QWidget):
         self._preview_enabled = preview_enabled
         self._preview_mode = preview_mode
         self._hotkeys = hotkeys
+        self._preview_pen_color = QColor(*preview_color)
 
         self._setup_mode = False
         self._rubber_band: Optional[QRubberBand] = None
@@ -154,7 +156,10 @@ class RoiOverlayController(QWidget):
         return self._current_roi
 
     def toggle_preview(self) -> None:
-        self._preview_enabled = not self._preview_enabled
+        self.set_preview_enabled(not self._preview_enabled)
+
+    def set_preview_enabled(self, enabled: bool) -> None:
+        self._preview_enabled = enabled
         if self._preview_enabled:
             if not self.isVisible():
                 self.show()
@@ -167,6 +172,16 @@ class RoiOverlayController(QWidget):
     def set_preview_mode(self, mode: PreviewMode) -> None:
         self._preview_mode = mode
         self.update()
+
+    def set_preview_color(self, color: Tuple[int, int, int, int]) -> None:
+        self._preview_pen_color = QColor(*color)
+        self.update()
+
+    def is_preview_enabled(self) -> bool:
+        return self._preview_enabled
+
+    def preview_mode(self) -> PreviewMode:
+        return self._preview_mode
 
     # ------------------------------------------------------------------
     # 内部処理
@@ -236,7 +251,7 @@ class RoiOverlayController(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor(0, 200, 255, 230), 2)
+        pen = QPen(self._preview_pen_color, 2)
         painter.setPen(pen)
         roi_rect = self._map_roi_to_widget(self._current_roi)
         if self._preview_mode == PreviewMode.LINE:
@@ -281,6 +296,7 @@ def create_overlay_app(
     preview_enabled: bool,
     preview_mode: str,
     hotkeys: dict,
+    preview_color: Optional[Tuple[int, int, int, int]] = None,
 ) -> Tuple[QApplication, RoiOverlayController]:
     """テストやスクリプトから簡単に呼び出すためのヘルパー関数。"""
 
@@ -294,5 +310,6 @@ def create_overlay_app(
         preview_enabled=preview_enabled,
         preview_mode=PreviewMode(preview_mode if preview_mode in PreviewMode._value2member_map_ else "off"),
         hotkeys=hotkeys,
+        preview_color=preview_color or (0, 200, 255, 230),
     )
     return app, overlay
