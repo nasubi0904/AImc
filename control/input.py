@@ -40,8 +40,33 @@ class InputController:
 
     _held_keys: Dict[str, float] = field(default_factory=dict)
     _last_click: Dict[str, float] = field(default_factory=dict)
+    _allowed_keys: set[str] | None = field(default=None, init=False)
+
+    # ------------------------------------------------------------------
+    # 許可キー管理
+    def set_allowed_keys(self, keys: set[str] | None) -> None:
+        """許可されたキーを設定する。``None`` の場合は制限なし。"""
+
+        if keys is None:
+            self._allowed_keys = None
+        else:
+            normalized = {key.strip().lower() for key in keys if key.strip()}
+            self._allowed_keys = normalized or set()
+        for held in list(self._held_keys.keys()):
+            if not self._is_allowed(held):
+                self.release(held)
+
+    def allowed_keys(self) -> set[str] | None:
+        return None if self._allowed_keys is None else set(self._allowed_keys)
+
+    def _is_allowed(self, key: str) -> bool:
+        if self._allowed_keys is None:
+            return True
+        return key.lower() in self._allowed_keys
 
     def press(self, key: str) -> None:
+        if not self._is_allowed(key):
+            return
         now = time.perf_counter()
         if key in self._last_click and now - self._last_click[key] < 1.0 / self.max_click_hz:
             return

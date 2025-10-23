@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import signal
+import threading
 import sys
 import time
 from pathlib import Path
+from typing import Callable, Optional, Set
 
 from agent.planner import Planner
 from control.input import InputController
@@ -15,9 +18,11 @@ from vision.hud import HudAnalyzer
 from vision.ocr import OCRWorker
 
 try:
+    from ui.inspector import InspectorWindow, LiveWorker
     from ui.roi_overlay import PreviewMode, RoiSelection, create_overlay_app
 except Exception:  # pragma: no cover - GUI 未サポート環境
     PreviewMode = RoiSelection = create_overlay_app = None  # type: ignore
+    InspectorWindow = LiveWorker = None  # type: ignore
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,12 +68,19 @@ def run_setup(config: EnvironmentConfig, path: Path) -> int:
     return 0
 
 
-def run_live(config: EnvironmentConfig, demo_task: bool = False) -> int:
+def run_live(
+    config: EnvironmentConfig,
+    demo_task: bool = False,
+    stop_event: Optional["threading.Event"] = None,
+    allowed_keys: Optional[Set[str]] = None,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> int:
     blackboard = Blackboard()
     inputs = InputController(
         max_hold_sec=config.input.max_hold_sec,
         max_click_hz=config.input.max_click_hz,
     )
+    inputs.set_allowed_keys(allowed_keys)
     planner = Planner()
     task_manager = TaskManager(Path(config.tasks.log_dir), blackboard)
     planner.bind_task_manager(task_manager)
@@ -97,6 +109,7 @@ def run_live(config: EnvironmentConfig, demo_task: bool = False) -> int:
         print(f"OCR 初期化に失敗しました: {exc}", file=sys.stderr)
         ocr = None
 
+    termination_status = "STOPPED"
     try:
         while True:
             if capture:
@@ -105,10 +118,16 @@ def run_live(config: EnvironmentConfig, demo_task: bool = False) -> int:
                     blackboard.timestamp = result.timestamp
                 except Exception as exc:  # pragma: no cover - 実機依存
                     print(f"キャプチャ取得に失敗: {exc}", file=sys.stderr)
+            if stop_event and stop_event.is_set():
+                blackboard.record_reason("停止要求を受信")
+                termination_status = "REQUESTED_STOP"
+                break
             status = tree.tick(blackboard, inputs)
             if status != previous_status:
                 previous_status = status
                 blackboard.record_reason(f"BT 状態: {status.name}")
+                if status_callback:
+                    status_callback(status.name)
             inputs.update()
             if demo_task_id and demo_start_time and time.perf_counter() - demo_start_time > 1.0:
                 task = task_manager.get_task(demo_task_id)
@@ -118,20 +137,106 @@ def run_live(config: EnvironmentConfig, demo_task: bool = False) -> int:
             time.sleep(0.2)
     except KeyboardInterrupt:
         print("ライブループを終了します", file=sys.stderr)
+        termination_status = "INTERRUPTED"
     finally:
         inputs.panic_stop()
         if capture:
             capture.stop()
         if ocr:
             ocr.stop()
+        if status_callback:
+            status_callback(termination_status)
+    return 0
+
+
+def run_ui(config: EnvironmentConfig, demo_task: bool = False) -> int:
+    if create_overlay_app is None or InspectorWindow is None or LiveWorker is None:
+        print("PySide6 が利用できないためインスペクタを表示できません", file=sys.stderr)
+        return 1
+
+    app, overlay = create_overlay_app(
+        monitor_id=config.capture.monitor_id,
+        roi=tuple(config.capture.roi),
+        preview_enabled=True,
+        preview_mode="line",
+        hotkeys=config.input.hotkeys.model_dump(),
+        preview_color=(255, 64, 64, 230),
+    )
+    overlay.set_preview_mode(PreviewMode.LINE)
+    overlay.set_preview_enabled(True)
+    overlay.set_preview_color((255, 64, 64, 230))
+    overlay.show()
+    overlay.raise_()
+
+    inspector = InspectorWindow(config, overlay)
+    roi = overlay.current_roi()
+    if roi:
+        inspector.move(roi.x + roi.width + 24, roi.y)
+    inspector.show()
+
+    from PySide6.QtCore import QThread, QTimer
+
+    worker_thread: Optional[QThread] = None
+    worker: Optional[LiveWorker] = None
+
+    def on_worker_finished(exit_code: int) -> None:
+        nonlocal worker_thread, worker
+        inspector.set_running(False)
+        if exit_code != 0:
+            inspector.update_status(f"エラー終了 (code={exit_code})")
+        if worker_thread:
+            worker_thread.quit()
+            worker_thread.wait()
+            worker_thread = None
+        if worker:
+            worker = None
+
+    def start_session(allowed: Optional[Set[str]]) -> None:
+        nonlocal worker_thread, worker
+        if worker_thread is not None:
+            return
+        inspector.set_running(True)
+        worker_thread = QThread()
+        worker = LiveWorker(run_live, config, demo_task=demo_task)
+        worker.set_allowed_keys(allowed)
+        worker.moveToThread(worker_thread)
+        worker.status_changed.connect(inspector.update_status)
+        worker.error_occurred.connect(inspector.show_error)
+        worker.finished.connect(on_worker_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker_thread.finished.connect(worker_thread.deleteLater)
+        worker_thread.started.connect(worker.run)
+        worker_thread.start()
+
+    def stop_session() -> None:
+        if worker:
+            worker.request_stop()
+
+    inspector.start_requested.connect(start_session)
+    inspector.stop_requested.connect(stop_session)
+
+    def handle_sigint(_signum, _frame) -> None:
+        if worker:
+            worker.request_stop()
+        else:
+            app.quit()
+
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    pulse = QTimer()
+    pulse.setInterval(150)
+    pulse.timeout.connect(lambda: None)
+    pulse.start()
+
+    app.exec()
+    if worker_thread:
+        worker_thread.quit()
+        worker_thread.wait()
     return 0
 
 
 def main() -> int:
     args = parse_args()
-    if not args.setup and not args.live:
-        print("--setup または --live を指定してください", file=sys.stderr)
-        return 1
 
     try:
         config = ensure_config(args.config)
@@ -148,7 +253,7 @@ def main() -> int:
     if args.live:
         return run_live(config, demo_task=args.demo_task)
 
-    return 0
+    return run_ui(config, demo_task=args.demo_task)
 
 
 if __name__ == "__main__":
