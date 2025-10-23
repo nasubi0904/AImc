@@ -1,0 +1,51 @@
+{
+  "capture": {
+    "monitor_id": 0,
+    "roi": [0, 0, 1280, 720],
+    "preview_border": {
+      "enabled": false,
+      "mode": "off"
+    },
+    "roi2_size": 200,
+    "downscale": {
+      "width": 640,
+      "height": 360
+    }
+  },
+  "audio": {
+    "asr": {
+      "device_index": 0,
+      "compute_type": "float16"
+    },
+    "tts": {
+      "host": "http://127.0.0.1:50021",
+      "speaker_id": 1
+    }
+  },
+  "vision": {
+    "frame_rate": 20,
+    "ocr_fps": 3
+  },
+  "input": {
+    "max_hold_sec": 1.2,
+    "max_click_hz": 5,
+    "hotkeys": {
+      "roi_reselect": "Ctrl+Alt+R",
+      "border_toggle": "Ctrl+Alt+P",
+      "panic": "Ctrl+Alt+X"
+    }
+  },
+  "agent": {
+    "bt_tick_rate": 5,
+    "default_goal": "idle"
+  },
+  "speech": {
+    "vad_level": 3,
+    "asr_language": "ja",
+    "tts_speed": 1.0
+  },
+  "tasks": {
+    "log_dir": "logs",
+    "summary_language": "ja"
+  }
+}
